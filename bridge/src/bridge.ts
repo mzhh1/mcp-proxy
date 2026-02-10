@@ -73,9 +73,8 @@ export class Bridge {
         } else if (msg.type === 'error') {
           console.error(`❌ Cloud error: ${msg.message}`);
         } else if (msg.type === 'pong') {
+          console.log('💓 Pong');
           // Heartbeat response received
-          // You could update a "lastActivity" timestamp here if you wanted
-          // to implement a watchdog that reconnects if the server is silent for too long.
         }
       } catch (err) {
         console.error('❌ Failed to handle cloud message:', err);
@@ -167,6 +166,7 @@ export class Bridge {
 
     this.heartbeatTimer = setInterval(() => {
       if (this.ws?.readyState === WebSocket.OPEN) {
+        console.log('💓 Ping');
         this.ws.send(JSON.stringify({ type: 'ping' }));
       }
     }, HEARTBEAT_INTERVAL);
