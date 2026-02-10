@@ -66,10 +66,22 @@ program
 
     saveConfig(config);
     console.log(`\n✅ 配置已保存到: ${getConfigPath()}`);
-    console.log(`📋 Node ID: ${nodeId}`);
-    console.log(`\n📌 远程调用示例:`);
-    console.log(`   curl http://localhost:8787/mcp/${nodeId}/tools \\`);
-    console.log(`     -H "Authorization: Bearer ${rawKey}"`);
+    
+    // Construct full bridge URL
+    const fullBridgeUrl = `${cloudUrl}/mcp/${nodeId}`;
+
+    console.log('\n🎉 Bridge Initialized Successfully!');
+    console.log('----------------------------------------');
+    console.log(`🌍 Bridge URL: ${fullBridgeUrl}`);
+    console.log(`� API Key:    ${rawKey}`);
+    console.log('----------------------------------------');
+    console.log('⚠️  请妥善保管 API Key，它不会再次显示！');
+    
+    console.log(`\n👉 Next steps:`);
+    console.log(`   1. Start the bridge:`);
+    console.log(`      mcp-bridge start`);
+    console.log(`   2. Test connection:`);
+    console.log(`      mcp-bridge client --url ${fullBridgeUrl} --key ${rawKey}`);
   });
 
 /**
@@ -85,10 +97,16 @@ program
       process.exit(1);
     }
 
+    const fullBridgeUrl = `${config.cloudUrl}/mcp/${config.nodeId}`;
+
     console.log('🚀 Starting MCP Bridge...');
     console.log(`   Cloud:  ${config.cloudUrl}`);
     console.log(`   Pieces: ${config.piecesEndpoint}`);
-    console.log(`   NodeID: ${config.nodeId}\n`);
+    console.log(`   NodeID: ${config.nodeId}`);
+    console.log(`   ---------------------------------------------------`);
+    console.log(`   🌍 Bridge URL: ${fullBridgeUrl}`);
+    console.log(`   ---------------------------------------------------`);
+    console.log('\n');
 
     const bridge = new Bridge(config);
 
@@ -145,25 +163,145 @@ program
   });
 
 /**
- * status: Show current configuration.
+ * client: Interactive client to test remote bridge
  */
 program
-  .command('status')
-  .description('Show current bridge configuration')
-  .action(() => {
-    const config = loadConfig();
-    if (!config) {
-      console.log('❌ No configuration found. Run `mcp-bridge init` first.');
-      return;
+  .command('client')
+  .description('Connect to a remote bridge and test tools interactively')
+  .option('--url <url>', 'Full bridge URL (e.g. https://cloud.com/mcp/{NODE_ID})')
+  .option('--key <key>', 'API Key')
+  .action(async (opts) => {
+    const readline = await import('readline/promises');
+    
+    // 1. Get URL
+    let baseUrl = opts.url;
+    if (!baseUrl) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      baseUrl = await rl.question('Bridge URL: ');
+      rl.close();
+    }
+    baseUrl = baseUrl.replace(/\/+$/, '');
+
+    // 2. Get Key (Hidden)
+    let key = opts.key;
+    if (!key) {
+      const { Writable } = await import('node:stream');
+      let muted = false;
+      const mutableStdout = new Writable({
+        write: function(chunk, encoding, callback) {
+          if (!muted) process.stdout.write(chunk, encoding);
+          callback();
+        }
+      });
+      const secureRl = readline.createInterface({
+        input: process.stdin,
+        output: mutableStdout,
+        terminal: true
+      });
+
+      process.stdout.write('API Key: ');
+      muted = true;
+      key = await secureRl.question('');
+      muted = false;
+      secureRl.close();
+      process.stdout.write('\n');
     }
 
-    console.log('📋 MCP Bridge Status');
-    console.log('-'.repeat(40));
-    console.log(`Config: ${getConfigPath()}`);
-    console.log(`Cloud:  ${config.cloudUrl}`);
-    console.log(`Pieces: ${config.piecesEndpoint}`);
-    console.log(`NodeID: ${config.nodeId}`);
-    console.log(`KeyHash: ${config.keyHash.slice(0, 12)}...`);
+    const headers = {
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/json'
+    };
+
+    console.log(`\n🔌 Connecting to ${baseUrl}...\n`);
+
+    try {
+      // Check Status
+      process.stdout.write('Checking status... ');
+      const statusRes = await fetch(`${baseUrl}/status`, { headers });
+      if (!statusRes.ok) throw new Error(`Status check failed: ${statusRes.status}`);
+      const status = await statusRes.json();
+      console.log('✅ Online');
+      console.log(status);
+
+      // List Tools
+      console.log('\nFetching tools...');
+      const toolsRes = await fetch(`${baseUrl}/tools`, { headers });
+      if (!toolsRes.ok) throw new Error(`List tools failed: ${toolsRes.status}`);
+      const toolsData = (await toolsRes.json()) as any;
+      const tools = toolsData.result?.tools || [];
+
+      if (tools.length === 0) {
+        console.log('⚠️  No tools found.');
+        return;
+      }
+
+      console.table(tools.map((t: any) => ({
+        Name: t.name,
+        Description: t.description?.slice(0, 50) + (t.description?.length > 50 ? '...' : '')
+      })));
+
+      // Interactive Loop
+      const rlLoop = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      console.log('\n💡 Enter a tool name to call it, or "exit" to quit.');
+
+      while (true) {
+        const name = await rlLoop.question('\n> ');
+        if (name.trim() === 'exit') break;
+        if (!name.trim()) continue;
+
+        const tool = tools.find((t: any) => t.name === name.trim());
+        if (!tool) {
+          console.log(`❌ Tool "${name}" not found.`);
+          continue;
+        }
+
+        console.log(`\nCalling ${name}...`);
+        console.log('Arguments (JSON, optional):'); 
+        console.log(`Schema: ${JSON.stringify(tool.inputSchema, null, 2)}`);
+        
+        const argsStr = await rlLoop.question('Enter args ({}): ');
+        let args = {};
+        try {
+          args = argsStr.trim() ? JSON.parse(argsStr) : {};
+        } catch (e) {
+          console.log('❌ Invalid JSON arguments');
+          continue;
+        }
+
+        const startTime = Date.now();
+        try {
+          const callRes = await fetch(`${baseUrl}/call`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              method: 'tools/call',
+              params: { name, arguments: args }
+            })
+          });
+
+          if (!callRes.ok) {
+             const errText = await callRes.text();
+             console.log(`❌ Call failed (${callRes.status}): ${errText}`);
+          } else {
+             const result = await callRes.json();
+             console.log(`✅ Success (${Date.now() - startTime}ms)`);
+             console.dir(result, { depth: null, colors: true });
+          }
+        } catch (err: any) {
+          console.log(`❌ Error: ${err.message}`);
+        }
+      }
+
+      rlLoop.close();
+
+    } catch (error: any) {
+      console.error(`\n❌ Error: ${error.message}`);
+      process.exit(1);
+    }
   });
 
 program.parse();
