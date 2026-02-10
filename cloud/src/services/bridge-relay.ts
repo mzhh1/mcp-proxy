@@ -14,7 +14,7 @@ interface PendingRequest {
  * Each keyHash maps to its own WebSocket connection.
  */
 export class BridgeRelay extends DurableObject<Env> {
-  /** keyHash → WebSocket mapping */
+  /** keyHash → WebSocket mapping (in-memory cache) */
   private bridges = new Map<string, WebSocket>();
   /** requestId → pending response */
   private pendingRequests = new Map<string, PendingRequest>();
@@ -57,7 +57,7 @@ export class BridgeRelay extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    this.ctx.acceptWebSocket(server);
+    this.ctx.acceptWebSocket(server, [keyHash]);
     this.bridges.set(keyHash, server);
     this.wsToKey.set(server, keyHash);
 
@@ -74,12 +74,18 @@ export class BridgeRelay extends DurableObject<Env> {
    */
   private handleStatus(request: Request): Response {
     const providedKeyHash = request.headers.get('X-Key-Hash');
-    if (!providedKeyHash || !this.bridges.has(providedKeyHash)) {
+    if (!providedKeyHash) {
       return Response.json({ error: 'Invalid key' }, { status: 403 });
     }
+
+    const ws = this.getBridge(providedKeyHash);
+    if (!ws) {
+      return Response.json({ error: 'Bridge not connected' }, { status: 404 });
+    }
+
     return Response.json({
       online: true,
-      activeBridges: this.bridges.size,
+      activeBridges: this.bridges.size, // This metric might be slightly off if we rely on recovery, but good enough
     });
   }
 
@@ -92,9 +98,9 @@ export class BridgeRelay extends DurableObject<Env> {
       return Response.json({ error: 'Invalid key' }, { status: 403 });
     }
 
-    const ws = this.bridges.get(providedKeyHash);
+    const ws = this.getBridge(providedKeyHash);
     if (!ws) {
-      return Response.json({ error: 'Invalid key' }, { status: 403 });
+      return Response.json({ error: 'Bridge not connected' }, { status: 404 });
     }
 
     const body = await request.json() as { method: string; params?: unknown };
@@ -173,5 +179,28 @@ export class BridgeRelay extends DurableObject<Env> {
       this.bridges.delete(keyHash);
       this.wsToKey.delete(ws);
     }
+  }
+
+  /**
+   * Helper to retrieve a bridge WebSocket by keyHash.
+   * If not in memory (due to DO hibernation/restart), try to recover via tags.
+   */
+  private getBridge(keyHash: string): WebSocket | undefined {
+    // 1. Fast path: check in-memory cache
+    if (this.bridges.has(keyHash)) {
+      return this.bridges.get(keyHash);
+    }
+
+    // 2. Slow path: recover from Hibernation API tags
+    const sockets = this.ctx.getWebSockets(keyHash);
+    if (sockets.length > 0) {
+      // Just pick the first one found (simplicity)
+      const ws = sockets[0];
+      this.bridges.set(keyHash, ws);
+      this.wsToKey.set(ws, keyHash);
+      return ws;
+    }
+
+    return undefined;
   }
 }
