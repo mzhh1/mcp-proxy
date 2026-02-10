@@ -146,6 +146,8 @@ export class BridgeRelay extends DurableObject<Env> {
           type: 'registered',
           message: 'Key rotated successfully',
         }));
+      } else if (msg.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
       }
     } catch (err) {
       console.error('[BridgeRelay] failed to parse message:', err);
