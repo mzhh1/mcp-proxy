@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mcp-cloud-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-10",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BRIDGE_RELAY",
+        "class_name": "BridgeRelay"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "BridgeRelay"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & secrets
+.dev.vars
+.env
+.env.*
+
+# Wrangler
+.wrangler/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Test output
+test_output.txt
+
+# Config (contains hashed keys)
+# ~/.mcp-bridge/config.json is outside this repo

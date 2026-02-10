@@ -1,0 +1,48 @@
+{
+  "name": "@autolabz/mcp-bridge",
+  "version": "1.0.0",
+  "description": "Bridge local Pieces MCP to cloud relay for remote AI agent access",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mcp-bridge": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "pieces",
+    "bridge",
+    "cloudflare-workers",
+    "long-term-memory"
+  ],
+  "author": "mzhh",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mzhh/mcp-proxy"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "node-machine-id": "^1.1.12",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
