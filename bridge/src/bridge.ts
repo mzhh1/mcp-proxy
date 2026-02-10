@@ -10,11 +10,14 @@ interface CloudMessage {
   message?: string;
 }
 
+const HEARTBEAT_INTERVAL = 30_000; // 30 seconds
+
 export class Bridge {
   private config: BridgeConfig;
   private ws: WebSocket | null = null;
   private mcpClient: MCPClient;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private shouldReconnect = true;
 
   constructor(config: BridgeConfig) {
@@ -54,6 +57,7 @@ export class Bridge {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+      this.startHeartbeat();
     });
 
     this.ws.on('message', async (data) => {
@@ -68,6 +72,10 @@ export class Bridge {
           await this.handleRequest(msg);
         } else if (msg.type === 'error') {
           console.error(`❌ Cloud error: ${msg.message}`);
+        } else if (msg.type === 'pong') {
+          // Heartbeat response received
+          // You could update a "lastActivity" timestamp here if you wanted
+          // to implement a watchdog that reconnects if the server is silent for too long.
         }
       } catch (err) {
         console.error('❌ Failed to handle cloud message:', err);
@@ -76,11 +84,13 @@ export class Bridge {
 
     this.ws.on('close', (code, reason) => {
       console.log(`🔌 Disconnected from cloud (${code}: ${reason.toString()})`);
+      this.stopHeartbeat();
       this.scheduleReconnect();
     });
 
     this.ws.on('error', (err) => {
       console.error('❌ WebSocket error:', err.message);
+      this.stopHeartbeat();
     });
   }
 
@@ -149,6 +159,26 @@ export class Bridge {
     this.config.keyHash = newKeyHash;
   }
 
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    
+    // Initial ping
+    // this.sendPing(); // Optional: send one immediately
+
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, HEARTBEAT_INTERVAL);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   /**
    * Gracefully stop the bridge.
    */
@@ -157,6 +187,7 @@ export class Bridge {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
     }
+    this.stopHeartbeat();
     if (this.ws) {
       this.ws.close(1000, 'bridge stopped');
     }
