@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
 import { getHashedMachineId } from './identity.js';
-import { loadConfig, saveConfig, getConfigPath } from './config.js';
+import { loadConfig, saveConfig, getConfigPath, BridgeConfig, loadClientConfig, saveClientConfig, getClientConfigPath } from './config.js';
 import { Bridge } from './bridge.js';
 
 const program = new Command();
@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('mcp-bridge')
   .description('Bridge local Pieces MCP to cloud relay')
-  .version('1.0.0');
+  .version('1.0.8');
 
 /**
  * init: First-time setup. Generates API key, hashes machine ID,
@@ -57,7 +57,7 @@ program
     const nodeId = await getHashedMachineId(cloudUrl);
 
     // Save config
-    const config = {
+    const config: BridgeConfig = {
       cloudUrl,
       nodeId,
       keyHash,
@@ -77,11 +77,26 @@ program
     console.log('----------------------------------------');
     console.log('⚠️  请妥善保管 API Key，它不会再次显示！');
     
+    // Prompt to save client config
+    const readline = await import('readline/promises');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    
+    console.log('\n');
+    const answer = await rl.question('👉 是否将此连接信息保存为默认 client 配置? (y/N) ');
+    if (answer.trim().toLowerCase() === 'y') {
+      saveClientConfig({
+        bridgeUrl: fullBridgeUrl,
+        apiKey: rawKey
+      });
+      console.log(`✅ Client 配置已保存到: ${getClientConfigPath()}`);
+    }
+    rl.close();
+
     console.log(`\n👉 Next steps:`);
     console.log(`   1. Start the bridge:`);
     console.log(`      mcp-bridge start`);
     console.log(`   2. Test connection:`);
-    console.log(`      mcp-bridge client --url ${fullBridgeUrl} --key ${rawKey}`);
+    console.log(`      mcp-bridge client`);
   });
 
 /**
@@ -163,6 +178,151 @@ program
   });
 
 /**
+ * client-set: Configure default client settings
+ */
+program
+  .command('client-set')
+  .description('Configure default client settings (Bridge URL and API Key)')
+  .option('--url <url>', 'Bridge URL')
+  .option('--key <key>', 'API Key')
+  .action(async (opts) => {
+    const existing = loadClientConfig();
+
+    const readline = await import('readline/promises');
+    
+    let url = opts.url;
+    let key = opts.key;
+
+    if (!url || !key) {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      
+      if (!url) {
+        url = await rl.question(`Bridge URL [${existing?.bridgeUrl || ''}]: `);
+        if (!url) url = existing?.bridgeUrl;
+      }
+      
+      if (!key) {
+        key = await rl.question(`API Key [${existing?.apiKey ? '***' : ''}]: `);
+        if (!key) key = existing?.apiKey;
+      }
+      
+      rl.close();
+    }
+
+    if (!url || !key) {
+      console.error('❌ Bridge URL and API Key are required.');
+      process.exit(1);
+    }
+    
+    // Remove trailing slashes from URL
+    url = url.replace(/\/+$/, '');
+
+    saveClientConfig({
+      bridgeUrl: url,
+      apiKey: key
+    });
+
+    console.log(`✅ Client configuration saved to: ${getClientConfigPath()}`);
+  });
+
+/**
+ * client-request: Perform a request to the bridge using stored credentials.
+ * Mimics curl syntax but uses config for base URL and key.
+ */
+program
+  .command('client-request')
+  .description('Perform a request to the bridge using stored credentials')
+  .argument('<endpoint>', 'API endpoint (e.g. /status, /tools, /call)')
+  .argument('[args...]', 'Additional arguments (e.g. name=tool_name)')
+  .option('-d, --data <json>', 'JSON data to send (implies POST)')
+  .action(async (endpoint, args, opts) => {
+     const clientConfig = loadClientConfig();
+     if (!clientConfig) {
+       console.error('❌ Client configuration not found.');
+       console.error('   Please run `mcp-bridge client-set` first.');
+       process.exit(1);
+     }
+
+     const { bridgeUrl, apiKey } = clientConfig;
+     
+     // Ensure endpoint starts with /
+     const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+     const url = `${bridgeUrl}${path}`;
+     
+     const method = opts.data ? 'POST' : 'GET';
+     const headers: Record<string, string> = {
+       'Authorization': `Bearer ${apiKey}`,
+       'Content-Type': 'application/json'
+     };
+
+     if (opts.data) {
+       // Handle cases where some shells (like powershell in certain modes)
+       // pass through the single quotes.
+       if (opts.data.startsWith("'") && opts.data.endsWith("'")) {
+         opts.data = opts.data.slice(1, -1);
+       }
+
+       try {
+         // Validate JSON
+         JSON.parse(opts.data);
+       } catch (e: any) {
+         console.error('❌ JSON 解析失败:', e.message);
+         console.error('原始数据:', JSON.stringify(opts.data));
+         process.exit(1);
+       }
+     }
+
+     console.log(`🌐 ${method} ${url}`);
+     
+     const startTime = Date.now();
+     try {
+       const res = await fetch(url, {
+         method,
+         headers,
+         body: opts.data
+       });
+
+       const duration = Date.now() - startTime;
+       console.log(`⬅️  Status: ${res.status} ${res.statusText} (${duration}ms)`);
+       
+       const text = await res.text();
+       try {
+         const json = JSON.parse(text);
+
+         let filterName;
+         if (args && Array.isArray(args) && args.length > 0) {
+           const nameArg = args.find((a: string) => a.startsWith('name='));
+           if (nameArg) {
+             filterName = nameArg.split('=')[1];
+           }
+         }
+
+         if (path.startsWith('/tools') && filterName) {
+           const tools = json.result?.tools || json.tools || [];
+           const tool = tools.find((t: any) => t.name === filterName);
+           if (tool) {
+             console.dir(tool, { depth: null, colors: true });
+           } else {
+             console.error(`❌ Tool "${filterName}" not found.`);
+           }
+         } else {
+           console.dir(json, { depth: null, colors: true });
+         }
+       } catch {
+         console.log(text);
+       }
+
+       if (!res.ok) {
+         process.exit(1);
+       }
+
+     } catch (err: any) {
+       console.error(`❌ Request failed: ${err.message}`);
+       process.exit(1);
+     }
+  });
+
+/**
  * client: Interactive client to test remote bridge
  */
 program
@@ -176,6 +336,14 @@ program
     // 1. Get URL
     let baseUrl = opts.url;
     if (!baseUrl) {
+      const clientConfig = loadClientConfig();
+      if (clientConfig?.bridgeUrl) {
+          baseUrl = clientConfig.bridgeUrl;
+          console.log(`Using default Bridge URL: ${baseUrl}`);
+      }
+    }
+
+    if (!baseUrl) {
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
       baseUrl = await rl.question('Bridge URL: ');
       rl.close();
@@ -184,6 +352,14 @@ program
 
     // 2. Get Key (Hidden)
     let key = opts.key;
+    if (!key) {
+        const clientConfig = loadClientConfig();
+        if (clientConfig?.apiKey) {
+            key = clientConfig.apiKey;
+            console.log(`Using default API Key: ***`);
+        }
+    }
+
     if (!key) {
       const { Writable } = await import('node:stream');
       let muted = false;
